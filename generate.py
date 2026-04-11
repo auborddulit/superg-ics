@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 SuperG → ICS — version GitHub Actions
-Génère des événements tout-jour avec uniquement le matériel comme titre.
+Événements tout-jour avec le nom du matériel comme titre.
 """
 
 import json
@@ -82,8 +82,19 @@ def login():
     print("✓ Connecté.")
 
 
+def get_appliance_names(day):
+    """Retourne les noms des appareils réservés ce jour (ceux avec AvailableCount=0)."""
+    items = api_get("/api/v1/appliances/list_available", {
+        "Group":         "true",
+        "DeliverAfter":  day,
+        "DeliverBefore": day,
+    })
+    # AvailableCount=0 signifie que l'appareil est réservé/sorti ce jour-là
+    names = [item["Name"] for item in items if item.get("AvailableCount", 1) == 0 and item.get("Name")]
+    return names if names else ["Matériel réservé"]
+
+
 def fmt_date_only(iso_str):
-    """Extrait uniquement la date YYYYMMDD depuis une ISO string."""
     if not iso_str:
         return None
     try:
@@ -98,19 +109,12 @@ def escape_ics(text):
     return str(text).replace("\\","\\\\").replace(";","\\;").replace(",","\\,").replace("\n","\\n")
 
 
-def make_vevent(invoice):
-    uid = f"{invoice['Id']}@superg.fr"
+def make_vevent(invoice, appliance_names):
+    uid     = f"{invoice['Id']}@superg.fr"
+    summary = escape_ics(" / ".join(appliance_names))
 
-    # Titre = les tags (ex: "Matériel") — jamais le nom du client
-    tags = invoice.get("Tags", [])
-    if tags:
-        summary = escape_ics(" / ".join(t.get("Name","") for t in tags if t.get("Name")))
-    else:
-        summary = "Réservation matériel"
-
-    # Dates tout-jour uniquement — on ignore les heures
-    deliver_after  = invoice.get("DeliverAfter","")
-    deliver_before = invoice.get("DeliverBefore","")
+    deliver_after  = invoice.get("DeliverAfter", "")
+    deliver_before = invoice.get("DeliverBefore", "")
 
     dtstart = fmt_date_only(deliver_after or deliver_before)
     dtend_d = datetime.strptime(dtstart, "%Y%m%d") + timedelta(days=1)
@@ -118,7 +122,7 @@ def make_vevent(invoice):
 
     now = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
 
-    lines = [
+    return "\n".join([
         "BEGIN:VEVENT",
         f"UID:{uid}",
         f"DTSTAMP:{now}",
@@ -126,8 +130,7 @@ def make_vevent(invoice):
         f"DTEND;VALUE=DATE:{dtend}",
         f"SUMMARY:{summary}",
         "END:VEVENT",
-    ]
-    return "\n".join(lines)
+    ])
 
 
 def fold_line(line):
@@ -151,26 +154,40 @@ def main():
         print("✗ Impossible de récupérer les données.")
         sys.exit(1)
 
-    booked_days = [e["Day"] for e in counts if e.get("OutCount",0) > 0]
+    booked_days = [e["Day"] for e in counts if e.get("OutCount", 0) > 0]
     print(f"📅 {len(booked_days)} jour(s) avec réservation(s)")
 
-    all_invoices = {}
+    # Récupère les factures et le matériel pour chaque jour
+    all_invoices   = {}   # id → invoice
+    day_appliances = {}   # day → [names]
+
     for day in booked_days:
         print(f"  → {day}...", end=" ", flush=True)
+
         invoices = api_get("/api/v1/invoices/list", {
             "Kind":          "Any",
             "HasAppliance":  "true",
             "DeliverAfter":  day,
             "DeliverBefore": day,
         })
+        names = get_appliance_names(day)
+        day_appliances[day] = names
+
         new = sum(1 for inv in invoices if inv["Id"] not in all_invoices)
         for inv in invoices:
+            # Attache le jour pour retrouver les noms plus tard
+            inv["_day"] = day
             all_invoices[inv["Id"]] = inv
-        print(f"{len(invoices)} résa(s), {new} nouvelle(s)")
+
+        print(f"{len(invoices)} résa(s) — {', '.join(names)}")
 
     print(f"\n✅ {len(all_invoices)} réservation(s) unique(s)")
 
-    vevents = [make_vevent(inv) for inv in all_invoices.values()]
+    vevents = [
+        make_vevent(inv, day_appliances.get(inv.get("_day",""), ["Matériel réservé"]))
+        for inv in all_invoices.values()
+    ]
+
     ics_lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",

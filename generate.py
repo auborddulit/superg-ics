@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 SuperG → ICS — version GitHub Actions
-Les credentials sont lus depuis les variables d'environnement.
+Génère des événements tout-jour avec uniquement le matériel comme titre.
 """
 
 import json
@@ -13,7 +13,6 @@ import http.cookiejar
 from datetime import datetime, timedelta
 import sys
 
-# ── Credentials depuis les secrets GitHub ──
 EMAIL    = os.environ.get("SUPERG_EMAIL", "")
 PASSWORD = os.environ.get("SUPERG_PASSWORD", "")
 
@@ -83,18 +82,8 @@ def login():
     print("✓ Connecté.")
 
 
-def fmt_ics_dt(iso_str):
-    if not iso_str:
-        return None
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
-        try:
-            return datetime.strptime(iso_str, fmt).strftime("%Y%m%dT%H%M%SZ")
-        except ValueError:
-            continue
-    return None
-
-
 def fmt_date_only(iso_str):
+    """Extrait uniquement la date YYYYMMDD depuis une ISO string."""
     if not iso_str:
         return None
     try:
@@ -110,54 +99,34 @@ def escape_ics(text):
 
 
 def make_vevent(invoice):
-    uid     = f"{invoice['Id']}@superg.fr"
-    name    = invoice.get("ContactComputedName") or invoice.get("ContactComputedNickname") or invoice.get("Ref","Réservation")
-    summary = escape_ics(name)
+    uid = f"{invoice['Id']}@superg.fr"
 
-    desc_parts = []
-    ref = invoice.get("Ref","")
-    if ref:
-        desc_parts.append(f"Réf : {ref}")
-    nick = invoice.get("ContactComputedNickname","")
-    if nick and nick != name:
-        desc_parts.append(f"Abr. : {nick}")
-    tags = invoice.get("Tags",[])
+    # Titre = les tags (ex: "Matériel") — jamais le nom du client
+    tags = invoice.get("Tags", [])
     if tags:
-        desc_parts.append("Tags : " + ", ".join(t.get("Name","") for t in tags))
-    total = invoice.get("TotalIncludingVat")
-    if total:
-        desc_parts.append(f"Total TTC : {total/100:.2f} €")
-    description = escape_ics("\\n".join(desc_parts))
+        summary = escape_ics(" / ".join(t.get("Name","") for t in tags if t.get("Name")))
+    else:
+        summary = "Réservation matériel"
 
+    # Dates tout-jour uniquement — on ignore les heures
     deliver_after  = invoice.get("DeliverAfter","")
     deliver_before = invoice.get("DeliverBefore","")
-    after_midnight  = not deliver_after  or deliver_after.endswith("T00:00:00Z")
-    before_midnight = not deliver_before or deliver_before.endswith("T00:00:00Z")
 
-    if after_midnight and before_midnight:
-        dtstart = fmt_date_only(deliver_after or deliver_before)
-        dtend_d = datetime.strptime(dtstart, "%Y%m%d") + timedelta(days=1)
-        dtend   = dtend_d.strftime("%Y%m%d")
-        dtstart_line = f"DTSTART;VALUE=DATE:{dtstart}"
-        dtend_line   = f"DTEND;VALUE=DATE:{dtend}"
-    else:
-        dtstart = fmt_ics_dt(deliver_after) or fmt_ics_dt(deliver_before)
-        dtend   = fmt_ics_dt(deliver_before) or dtstart
-        dtstart_line = f"DTSTART:{dtstart}"
-        dtend_line   = f"DTEND:{dtend}"
+    dtstart = fmt_date_only(deliver_after or deliver_before)
+    dtend_d = datetime.strptime(dtstart, "%Y%m%d") + timedelta(days=1)
+    dtend   = dtend_d.strftime("%Y%m%d")
 
     now = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+
     lines = [
         "BEGIN:VEVENT",
         f"UID:{uid}",
         f"DTSTAMP:{now}",
-        dtstart_line,
-        dtend_line,
+        f"DTSTART;VALUE=DATE:{dtstart}",
+        f"DTEND;VALUE=DATE:{dtend}",
         f"SUMMARY:{summary}",
+        "END:VEVENT",
     ]
-    if description:
-        lines.append(f"DESCRIPTION:{description}")
-    lines.append("END:VEVENT")
     return "\n".join(lines)
 
 

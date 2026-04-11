@@ -33,3 +33,5 @@ jobs:
           git add superg_reservations.ics
           git diff --cached --quiet || git commit -m "Update ICS $(date -u +%Y-%m-%d)"
           git push
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

@@ -109,18 +109,14 @@ def escape_ics(text):
     return str(text).replace("\\","\\\\").replace(";","\\;").replace(",","\\,").replace("\n","\\n")
 
 
-def make_vevent(invoice, appliance_names):
-    uid     = f"{invoice['Id']}@superg.fr"
-    summary = escape_ics(" / ".join(appliance_names))
-
-    deliver_after  = invoice.get("DeliverAfter", "")
-    deliver_before = invoice.get("DeliverBefore", "")
-
-    dtstart = fmt_date_only(deliver_after or deliver_before)
+def make_vevent(day, appliance_name, idx):
+    """Un événement par appareil réservé par jour."""
+    uid     = f"{day}-{idx}@superg.fr"
+    summary = escape_ics(appliance_name)
+    dtstart = datetime.strptime(day, "%Y-%m-%d").strftime("%Y%m%d")
     dtend_d = datetime.strptime(dtstart, "%Y%m%d") + timedelta(days=1)
     dtend   = dtend_d.strftime("%Y%m%d")
-
-    now = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    now     = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
 
     return "\n".join([
         "BEGIN:VEVENT",
@@ -157,36 +153,17 @@ def main():
     booked_days = [e["Day"] for e in counts if e.get("OutCount", 0) > 0]
     print(f"📅 {len(booked_days)} jour(s) avec réservation(s)")
 
-    # Récupère les factures et le matériel pour chaque jour
-    all_invoices   = {}   # id → invoice
-    day_appliances = {}   # day → [names]
+    # Un événement par appareil réservé par jour
+    vevents = []
 
     for day in booked_days:
         print(f"  → {day}...", end=" ", flush=True)
-
-        invoices = api_get("/api/v1/invoices/list", {
-            "Kind":          "Any",
-            "HasAppliance":  "true",
-            "DeliverAfter":  day,
-            "DeliverBefore": day,
-        })
         names = get_appliance_names(day)
-        day_appliances[day] = names
+        for idx, name in enumerate(names):
+            vevents.append(make_vevent(day, name, idx))
+        print(f"{len(names)} appareil(s) — {', '.join(names)}")
 
-        new = sum(1 for inv in invoices if inv["Id"] not in all_invoices)
-        for inv in invoices:
-            # Attache le jour pour retrouver les noms plus tard
-            inv["_day"] = day
-            all_invoices[inv["Id"]] = inv
-
-        print(f"{len(invoices)} résa(s) — {', '.join(names)}")
-
-    print(f"\n✅ {len(all_invoices)} réservation(s) unique(s)")
-
-    vevents = [
-        make_vevent(inv, day_appliances.get(inv.get("_day",""), ["Matériel réservé"]))
-        for inv in all_invoices.values()
-    ]
+    print(f"\n✅ {len(vevents)} événement(s) au total")
 
     ics_lines = [
         "BEGIN:VCALENDAR",
